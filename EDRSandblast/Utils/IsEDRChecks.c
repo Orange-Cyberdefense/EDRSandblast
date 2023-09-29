@@ -1690,6 +1690,8 @@ TCHAR const* EDR_DRIVERS[] = {
    _T("SophosSupport.sys"),
    // Cisco AMP
    _T("ExPrevDriver.sys"),
+   // Harfang
+   _T("hlprotect.sys"),
 };
 
 BOOL isFileSignatureMatchingEDR(TCHAR* filePath) {

@@ -13,10 +13,12 @@
 
 #include "NtoskrnlOffsets.h"
 
+
 union NtoskrnlOffsets g_ntoskrnlOffsets = { 0 };
 
 // Return the offsets of nt!PspCreateProcessNotifyRoutine, nt!PspCreateThreadNotifyRoutine, nt!PspLoadImageNotifyRoutine, and nt!_PS_PROTECTION for the specific Windows version in use.
 void LoadNtoskrnlOffsetsFromFile(TCHAR* ntoskrnlOffsetFilename) {
+    BOOL verbose = FALSE;
     LPTSTR ntoskrnlVersion = GetNtoskrnlVersion();
     _tprintf_or_not(TEXT("[*] System's ntoskrnl.exe file version is: %s\n"), ntoskrnlVersion);
 
@@ -31,21 +33,31 @@ void LoadNtoskrnlOffsetsFromFile(TCHAR* ntoskrnlOffsetFilename) {
     TCHAR lineNtoskrnlVersion[2048];
     TCHAR line[2048];
     while (_fgetts(line, _countof(line), offsetFileStream)) {
-        if (_tcsncmp(line, TEXT("ntoskrnl"), _countof(TEXT("ntoskrnl")) - 1)) {
-            _putts_or_not(TEXT("[-] CSV file format is unexpected!\n"));
-            break;
-        }
+        //if (_tcsncmp(line, TEXT("ntoskrnl"), _countof(TEXT("ntoskrnl")) - 1)) {
+        //    _putts_or_not(TEXT("[-] CSV file format is unexpected!\n"));
+        //    break;
+        //}
         TCHAR* dupline = _tcsdup(line);
         TCHAR* tmpBuffer = NULL;
         _tcscpy_s(lineNtoskrnlVersion, _countof(lineNtoskrnlVersion), _tcstok_s(dupline, TEXT(","), &tmpBuffer));
-        if (_tcscmp(ntoskrnlVersion, lineNtoskrnlVersion) == 0) {
+        if (sha256sum(GetNtoskrnlPath(), &lineNtoskrnlVersion, verbose) != 0) {
+            if (verbose)
+                _tprintf_or_not(TEXT("[LoadNtoskrnlOffsetsFromFile] Bad checksum\n"));
+        }
+        else {
+            if (verbose)
+                _tprintf_or_not(TEXT("[LoadNtoskrnlOffsetsFromFile] Good checksum\n"));
+            //if (_tcscmp(ntoskrnlVersion, lineNtoskrnlVersion) == 0) {
             TCHAR* endptr;
             _tprintf_or_not(TEXT("[+] Offsets are available for this version of ntoskrnl.exe (%s)!\n"), ntoskrnlVersion);
             for (int i = 0; i < _SUPPORTED_NTOSKRNL_OFFSETS_END; i++) {
                 g_ntoskrnlOffsets.ar[i] = _tcstoull(_tcstok_s(NULL, TEXT(","), &tmpBuffer), &endptr, 16);
             }
             break;
+            //}
+
         }
+
     }
     fclose(offsetFileStream);
 }
@@ -65,7 +77,7 @@ void SaveNtoskrnlOffsetsToFile(TCHAR* ntoskrnlOffsetFilename) {
     for (int i = 0; i < _SUPPORTED_NTOSKRNL_OFFSETS_END; i++) {
         _ftprintf(offsetFileStream, TEXT(",%llx"), g_ntoskrnlOffsets.ar[i]);
     }
-    _fputts(TEXT("\n"), offsetFileStream);
+    _fputts(TEXT(""), offsetFileStream);
 
     fclose(offsetFileStream);
 }

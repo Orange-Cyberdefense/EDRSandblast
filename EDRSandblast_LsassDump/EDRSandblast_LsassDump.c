@@ -7,6 +7,7 @@
 #pragma comment(lib, "EDRSandblast_Core.lib")
 #pragma comment(lib, "EDRSandblast_StaticLibrary.lib")
 #pragma comment(lib, "Shlwapi.lib")
+#pragma comment(lib, "fltlib.lib")
 
 
 int main()

@@ -19,6 +19,7 @@ union WdigestOffsets g_wdigestOffsets = { 0 };
 
 // Return the offsets of nt!PspCreateProcessNotifyRoutine, nt!PspCreateThreadNotifyRoutine, nt!PspLoadImageNotifyRoutine, and nt!_PS_PROTECTION for the specific Windows version in use.
 void LoadWdigestOffsetsFromFile(TCHAR* wdigestOffsetFilename) {
+    BOOL verbose = FALSE;
     LPTSTR wdigestVersion = GetWdigestVersion();
     _tprintf_or_not(TEXT("[*] System's wdigest.dll file version is: %s\n"), wdigestVersion);
 
@@ -36,9 +37,14 @@ void LoadWdigestOffsetsFromFile(TCHAR* wdigestOffsetFilename) {
         TCHAR* dupline = _tcsdup(line);
         TCHAR* tmpBuffer = NULL;
         _tcscpy_s(lineWdigestVersion, _countof(lineWdigestVersion), _tcstok_s(dupline, TEXT(","), &tmpBuffer));
-        if (_tcscmp(wdigestVersion, lineWdigestVersion) == 0) {
+        //if (_tcscmp(wdigestVersion, lineWdigestVersion) == 0) {
+        if (sha256sum(GetWdigestPath(), &lineWdigestVersion, verbose) != 0) {
+            if (verbose)
+                _putts_or_not(TEXT("\n[LoadWdigestOffsetsFromFile] Bad wdigest checksum"));
+        } else {
             TCHAR* endptr;
-            _tprintf_or_not(TEXT("[+] Offsets are available for this version of wdigest.dll (%s)!\n"), wdigestVersion);
+            //_tprintf_or_not(TEXT("[+] Offsets are available for this version of wdigest.dll (%s)!\n"), wdigestVersion);
+            _putts_or_not(TEXT("\n[LoadWdigestOffsetsFromFile] Good wdigest checksum"));
             for (int i = 0; i < _SUPPORTED_WDIGEST_OFFSETS_END; i++) {
                 g_wdigestOffsets.ar[i] = _tcstoull(_tcstok_s(NULL, TEXT(","), &tmpBuffer), &endptr, 16);
             }
@@ -63,7 +69,7 @@ void SaveWdigestOffsetsToFile(TCHAR* wdigestOffsetFilename) {
     for (int i = 0; i < _SUPPORTED_WDIGEST_OFFSETS_END; i++) {
         _ftprintf(offsetFileStream, TEXT(",%llx"), g_wdigestOffsets.ar[i]);
     }
-    _fputts(TEXT("\n"), offsetFileStream);
+    _fputts(TEXT(""), offsetFileStream);
 
     fclose(offsetFileStream);
 }

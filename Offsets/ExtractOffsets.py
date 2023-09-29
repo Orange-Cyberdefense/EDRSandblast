@@ -2,6 +2,9 @@ import argparse
 import csv
 import os
 import sys
+import re
+# Python program to find SHA256 hash string of a file
+import hashlib
 
 from requests import get
 from gzip import decompress
@@ -13,8 +16,8 @@ import threading
 CSVLock = threading.Lock()
 
 machineType = dict(x86=332, x64=34404)
-knownImageVersions = dict(ntoskrnl=list(), wdigest=list())
-extensions_by_mode = dict(ntoskrnl="exe", wdigest="dll")
+knownImageVersions = dict(ntoskrnl=list(), wdigest=list(),ci=list(),fltmgr=list())
+extensions_by_mode = dict(ntoskrnl="exe", wdigest="dll",ci="dll",fltmgr="sys")
 
 def run(args, **kargs):
     """Wrap subprocess.run to works on Windows and Linux"""
@@ -41,9 +44,12 @@ def downloadSpecificFile(entry, pe_basename, pe_ext, knownPEVersions, output_fol
     virtual_size = entry['fileInfo']['virtualSize']
     file_id = hex(timestamp).replace('0x','').zfill(8).upper() + hex(virtual_size).replace('0x','')
     url = 'https://msdl.microsoft.com/download/symbols/' + pe_name + '/' + file_id + '/' + pe_name
-    if "version" not in entry['fileInfo']:
+    # fix download error, sometimes version does not exist
+    try:
+        version = entry['fileInfo']['version'].split(' ')[0]
+    except KeyError:
+        print(f"{url} version is unknown.")
         return "SKIP"
-    version = entry['fileInfo']['version'].split(' ')[0]
     
     # Output file format: <PE>_build-revision.<exe | dll>
     output_version = '-'.join(version.split('.')[-2:])
@@ -90,6 +96,7 @@ def downloadPEFileFromMS(pe_basename, pe_ext, knownPEVersions, output_folder):
 
 def get_symbol_offset(symbols_info, symbol_name):
     for line in symbols_info:
+        #print(f"[+] {line} <------ {symbol_name} ? ") 
         # sometimes, a "_" is prepended to the symbol name ...
         if line.strip().split(" ")[-1].endswith(symbol_name):
             return int(line.split(" ")[0], 16)
@@ -104,6 +111,84 @@ def get_field_offset(symbols_info, field_name):
             return symbol_offset
     else:
         return 0
+
+# Quick and dirty but seems to do the job
+def get_FLTP_FRAME_field_offset(symbols_info, field_name):
+    iaminframe = 0
+    for line in symbols_info:
+        if "struct _FLTP_FRAME {" in line:
+            print("[+]  <------ struct _FLTP_FRAME {")
+            iaminframe = 1
+        else:
+            if "[+] };" in line:
+                iaminframe = 0
+
+        if (field_name in line and iaminframe == 1):
+            print(f"[+]  <------ {field_name} ? ")
+            assert "offset" in line
+            symbol_offset = int(line.split("+")[-1], 16)
+            return symbol_offset
+    else:
+        return 0
+
+# Quick and dirty but seems to do the job
+def get_FLT_RESOURCE_LIST_HEAD_field_offset(symbols_info, field_name):
+    iaminframe = 0
+    for line in symbols_info:
+        if "struct _FLT_RESOURCE_LIST_HEAD {" in line:
+            print("[+]  <------ struct _FLT_RESOURCE_LIST_HEAD {")
+            iaminframe = 1
+        else:
+            if "[+] };" in line:
+                iaminframe = 0
+
+        if (field_name in line and iaminframe == 1):
+            print(f"[+]  <------ {field_name} ? ")
+            assert "offset" in line
+            symbol_offset = int(line.split("+")[-1], 16)
+            return symbol_offset
+    else:
+        return 0
+
+# Quick and dirty but seems to do the job
+def get_FLT_FILTER_field_offset(symbols_info, field_name):
+    iaminframe = 0
+    for line in symbols_info:
+        if "struct _FLT_FILTER {" in line:
+            print("[+]  <------ struct _FLT_FILTER {")
+            iaminframe = 1
+        else:
+            if "[+] };" in line:
+                iaminframe = 0
+
+        if (field_name in line and iaminframe == 1):
+            print(f"[+]  <------ {field_name} ? ")
+            assert "offset" in line
+            symbol_offset = int(line.split("+")[-1], 16)
+            return symbol_offset
+    else:
+        return 0
+
+# Quick and dirty but seems to do the job
+def get_FLT_SERVER_PORT_OBJECT_field_offset(symbols_info, field_name):
+    iaminframe = 0
+    for line in symbols_info:
+        if "struct _FLT_SERVER_PORT_OBJECT {" in line:
+            print("[+]  <------ struct _FLT_SERVER_PORT_OBJECT {")
+            iaminframe = 1
+        else:
+            if "[+] };" in line:
+                iaminframe = 0
+
+        if (field_name in line and iaminframe == 1):
+            print(f"[+]  <------ {field_name} ? ")
+            assert "offset" in line
+            symbol_offset = int(line.split("+")[-1], 16)
+            return symbol_offset
+    else:
+        return 0
+
+
 
 def get_file_version(path):
     # dump version number using r2
@@ -127,6 +212,12 @@ def extractOffsets(input_file, output_file, mode):
                     break
                 elif "wdigest.dll" in line:
                     imageType = "wdigest"
+                    break
+                elif "CI.dll" in line:
+                    imageType = "ci"
+                    break
+                elif "FLTMGR.SYS" in line:
+                    imageType = "fltmgr"
                     break
             else:
                 print(f"[*] File {input_file} unrecognized")
@@ -155,6 +246,7 @@ def extractOffsets(input_file, output_file, mode):
             # dump all symbols
             r = run(["r2", "-c", "idpi", "-qq", '-B', '0', input_file], capture_output=True)
             all_symbols_info = [line.strip() for line in r.stdout.decode().splitlines()]
+            
 
             if imageType == "ntoskrnl":
                 symbols = [("PspCreateProcessNotifyRoutine",get_symbol_offset), 
@@ -172,17 +264,52 @@ def extractOffsets(input_file, output_file, mode):
                 ("g_fParameter_UseLogonCredential",get_symbol_offset), 
                 ("g_IsCredGuardEnabled",get_symbol_offset)
                 ]
-                            
+            elif imageType == "ci":
+                symbols = [
+                ("g_CiOptions",get_symbol_offset), 
+                ]
+            elif imageType == "fltmgr":
+                symbols = [
+                ("FltGlobals",get_symbol_offset),
+                ("_FLT_RESOURCE_LIST_HEAD FrameList",get_field_offset),
+                ("_LIST_ENTRY rList",get_field_offset),
+                ("_LIST_ENTRY Links",get_FLTP_FRAME_field_offset),
+                ("_FLT_RESOURCE_LIST_HEAD RegisteredFilters",get_field_offset),
+                ("_LIST_ENTRY rList",get_FLT_RESOURCE_LIST_HEAD_field_offset),
+                ("uint32_t rCount",get_FLT_RESOURCE_LIST_HEAD_field_offset),
+                ("_LIST_ENTRY PrimaryLink",get_field_offset),
+                ("struct _UNICODE_STRING Name",get_FLT_FILTER_field_offset),
+                ("_FLT_MUTEX_LIST_HEAD ConnectionList",get_field_offset),
+                ("_LIST_ENTRY mList",get_field_offset),
+                ("uint32_t mCount",get_field_offset),
+                ("int32_t MaxConnections",get_field_offset),
+                ("int32_t NumberOfConnections",get_field_offset),
+                ("void * Cookie",get_FLT_SERVER_PORT_OBJECT_field_offset),
+                ("proc * MessageNotify",get_field_offset),
+                ("proc * DisconnectNotify",get_field_offset),
+                ("proc * ConnectNotify",get_field_offset)
+                ]
                 
             symbols_values = list()
             for symbol_name, get_offset in symbols:
                 symbol_value = get_offset(all_symbols_info, symbol_name)
                 symbols_values.append(symbol_value)
-                #print(f"[+] {symbol_name} = {hex(symbol_value)}") 
+                print(f"[+] {symbol_name} = {hex(symbol_value)}") 
             
+
+            print(f"[+] do it : {input_file}") 
+            sha256_hash = hashlib.sha256()
+            with open(input_file,"rb") as f:
+                # Read and update hash string value in blocks of 4K
+                for byte_block in iter(lambda: f.read(4096),b""):
+                    sha256_hash.update(byte_block)
+                print(sha256_hash.hexdigest())
+
+
+
             with CSVLock:
                 with open(output_file, 'a') as output:
-                    output.write(f'{imageVersion},{",".join(hex(val).replace("0x","") for val in symbols_values)}\n')
+                    output.write(f'{sha256_hash.hexdigest()},{",".join(hex(val).replace("0x","") for val in symbols_values)}\n')
             
             #print("wrote into CSV !")
 
@@ -221,18 +348,18 @@ def loadOffsetsFromCSV(loadedVersions, CSVPath):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     
-    parser.add_argument('mode', help='ntoskrnl or wdigest. Mode to download and extract offsets for either ntoskrnl or wdigest')
+    parser.add_argument('mode', help='ntoskrnl or wdigest or ci or fltmgr. Mode to download and extract offsets for either ntoskrnl or wdigest or ci or fltmgr')
     parser.add_argument('-i', '--input', dest='input', required=True,
-                        help='Single file or directory containing ntoskrnl.exe / wdigest.dll to extract offsets from. If in download mode, the PE downloaded from MS symbols servers will be placed in this folder.')
+                        help='Single file or directory containing ntoskrnl.exe / wdigest.dll / ci.dll / fltmgr.sys to extract offsets from. If in download mode, the PE downloaded from MS symbols servers will be placed in this folder.')
     parser.add_argument('-o', '--output', dest='output', 
-                        help='CSV file to write offsets to. If the specified file already exists, only new ntoskrnl versions will be downloaded / analyzed. Defaults to NtoskrnlOffsets.csv / WdigestOffsets.csv in the current folder.')
+                        help='CSV file to write offsets to. If the specified file already exists, only new ntoskrnl versions will be downloaded / analyzed. Defaults to NtoskrnlOffsets.csv / WdigestOffsets.csv / CiOffsets.csv / FltmgrOffsets.csv in the current folder.')
     parser.add_argument('-d', '--download', dest='download', action='store_true',
                         help='Flag to download the PE from Microsoft servers using list of versions from winbindex.m417z.com.')
     
     args = parser.parse_args()
     mode = args.mode.lower()
     if mode not in knownImageVersions:
-        print(f'[!] ERROR : unsupported mode "{args.mode}", supported mode are: "ntoskrnl" and "wdigest"')      
+        print(f'[!] ERROR : unsupported mode "{args.mode}", supported mode are: "ntoskrnl" and "wdigest" and "ci"')      
         exit(1)
     
     # check R2 version
@@ -242,12 +369,7 @@ if __name__ == '__main__':
         print(r.stderr)
         exit(r.returncode)
     output = r.stdout.decode()
-    """
-    can be:
-     * a series of lines like "5.5.0  r2\n5.5.0  r_lib\n[...]"
-     * a simple tag "5.8.2-158-gca9763f20d"
-    """
-    ma,me,mi = map(int, output.splitlines()[0].split(" ")[0].split("-")[0].split("."))
+    ma,me,mi = map(int, output.splitlines()[0].split(" ")[0].split("."))
     if (ma, me, mi) < (5,0,0):
         print("WARNING : This script has been tested with radare2 5.0.0 (works) and 4.3.1 (does NOT work)")
         print(f"You have version {ma}.{me}.{mi}, if is does not work correctly, meaning most of the offsets are not found (i.e. 0), check radare2's 'idpi' command output and modify get_symbol_offset() & get_field_offset() to parse symbols correctly")
@@ -276,6 +398,10 @@ if __name__ == '__main__':
                 output.write('ntoskrnlVersion,PspCreateProcessNotifyRoutineOffset,PspCreateThreadNotifyRoutineOffset,PspLoadImageNotifyRoutineOffset,_PS_PROTECTIONOffset,EtwThreatIntProvRegHandleOffset,EtwRegEntry_GuidEntryOffset,EtwGuidEntry_ProviderEnableInfoOffset,PsProcessType,PsThreadType,CallbackList\n')
             elif mode == "wdigest":
                 output.write('wdigestVersion,g_fParameter_UseLogonCredentialOffset,g_IsCredGuardEnabledOffset\n')
+            elif mode == "ci":
+                output.write('ciVersion,g_CiOptionsOffset\n')
+            elif mode == "fltmgr":
+                output.write('fltmgrVersion,FltGlobalsOffset,FrameList,FrameList_rList,_FLTP_FRAME.Links,_FLTP_FRAME.RegisteredFilters,FilterListHead,FilterListCount,_FLT_OBJECT.PrimaryLink,_FLT_FILTER.Name,_FLT_FILTER.ConnectionList,mList,mCount,MaxConnections,NumberOfConnections,srvPortCookie,MessageNotify,DisconnectNotify,ConnectNotify\n')
             else:
                 assert False
     # In download mode, an updated list of image versions published will be retrieved from https://winbindex.m417z.com.
@@ -290,3 +416,4 @@ if __name__ == '__main__':
     
     # Extract the offsets from the specified file or the folders containing image files. 
     extractOffsets(args.input, args.output, mode)
+
